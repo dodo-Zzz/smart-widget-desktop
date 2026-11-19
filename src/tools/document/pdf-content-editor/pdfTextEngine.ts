@@ -5,7 +5,7 @@ interface Glyph { char: string; origin: mupdf.Point; quad: mupdf.Quad; advance: 
 interface TextRun extends OriginalPdfText { glyphs: Glyph[] }
 
 function readRuns(page: mupdf.PDFPage, index: number): TextRun[] {
-  let invisibleLayer = false;
+  let hasInvisibleText = false;
   const metrics = new Map<string, { size: number; scale: number; advance: number }>();
   const originKey = (origin: number[]) => origin.map((value) => Math.round(value * 100)).join(":");
   const inspect = (text: mupdf.Text, ctm: mupdf.Matrix) => text.walk({
@@ -19,31 +19,33 @@ function readRuns(page: mupdf.PDFPage, index: number): TextRun[] {
   const detector = new mupdf.Device({
     fillText: inspect,
     strokeText(text, _stroke, ctm) { inspect(text, ctm); },
-    ignoreText() { invisibleLayer = true; }, clipText() { invisibleLayer = true; }, clipStrokeText() { invisibleLayer = true; },
+    ignoreText() { hasInvisibleText = true; }, clipText() { hasInvisibleText = true; }, clipStrokeText() { hasInvisibleText = true; },
   });
   try { page.run(detector, mupdf.Matrix.identity); detector.close(); }
   finally { detector.destroy(); }
   const structured = page.toStructuredText("preserve-whitespace");
   const runs: TextRun[] = [];
   const bounds = page.getBounds();
-  let line = -1, runLine = -1, run: TextRun | undefined, style = "", supported = true;
+  let line = -1, runLine = -1, run: TextRun | undefined, style = "", horizontal = true;
   try {
     structured.walk({
       beginTextBlock() { run = undefined; style = ""; },
       beginLine(bbox, wmode, direction) {
         line++;
-        supported = !invisibleLayer && wmode === 0 && direction[0] > 0.99 && Math.abs(direction[1]) < 0.01;
+        horizontal = wmode === 0 && direction[0] > 0.99 && Math.abs(direction[1]) < 0.01;
         // 只合并同一文本块内紧邻的行，避免将标题、分栏或远处的文字误作一个段落。
-        if (run && (run.supported !== supported || bbox[1] - bounds[1] > run.y + run.height + run.fontSize * 0.8 || bbox[0] - bounds[0] > run.x + run.width + run.fontSize * 0.7)) { run = undefined; style = ""; }
+        if (run && (bbox[1] - bounds[1] > run.y + run.height + run.fontSize * 0.8 || bbox[0] - bounds[0] > run.x + run.width + run.fontSize * 0.7)) { run = undefined; style = ""; }
       },
       onChar(char, origin, font, size, quad, color) {
         const actual = metrics.get(originKey(origin));
+        // 隐藏的 OCR 或裁切文字不能让同一页上正常绘制的标题失去编辑能力。
+        const supported = horizontal && (!hasInvisibleText || !!actual || (/^\s$/.test(char) && run?.supported === true));
         // 结构化文字的 size 是矩阵面积的平方根，水平压缩时并非原字号。
         size = actual?.size ?? size;
         const rgb = color.length === 1 ? [color[0], color[0], color[0]] : color;
         const hex = `#${rgb.slice(0, 3).map((n) => Math.round(Math.max(0, Math.min(1, n)) * 255).toString(16).padStart(2, "0")).join("")}`;
         const key = `${font.getName().replace(/^[A-Z]{6}\+/, "")}:${Math.round(size * 100) / 100}:${Math.round((actual?.scale ?? 1) * 1000)}:${hex}`;
-        if (!run || style !== key) {
+        if (!run || style !== key || run.supported !== supported) {
           run = { id: `${index}:${line}:${runs.length}`, page: index, text: "", x: Infinity, y: Infinity, width: 0, height: 0, fontSize: size, color: hex, supported, fontName: font.getName(), bold: font.isBold(), italic: font.isItalic(), baseline: origin[1] - bounds[1], originX: origin[0] - bounds[0], horizontalScale: actual?.scale ?? 1, glyphs: [] };
           runs.push(run); style = key;
         } else if (runLine !== line) {

@@ -44,7 +44,7 @@ const en: Messages<typeof zhCN> = {
     clipboard: "Clipboard history",
     clipboardToggle: "Pause or resume clipboard recording",
     quit: "Quit",
-    tooltip: "Open Tools",
+    tooltip: "Smart Widget",
   },
   app: {
     comingSoonTitle: "{name} — coming soon",

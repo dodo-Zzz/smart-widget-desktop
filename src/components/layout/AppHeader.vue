@@ -115,7 +115,7 @@ watch(
   <header class="topbar">
     <button class="brand" :class="{ compact }" :aria-label="t('home.title')" @click="$emit('home')">
       <AppLogo :size="22" />
-      <span v-if="!compact" class="name">Open Tools</span>
+      <span v-if="!compact" class="name">Smart Widget</span>
     </button>
 
     <div class="tabs-wrap" :class="{ 'fade-left': canLeft, 'fade-right': canRight }">

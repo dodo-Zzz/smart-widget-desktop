@@ -44,7 +44,7 @@ const ja: Messages<typeof zhCN> = {
     clipboard: "クリップボード履歴",
     clipboardToggle: "クリップボードの記録を一時停止／再開",
     quit: "終了",
-    tooltip: "Open Tools",
+    tooltip: "Smart Widget",
   },
   app: {
     comingSoonTitle: "{name}（近日公開）",

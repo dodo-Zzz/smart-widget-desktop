@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { i18n } from "@/locales";
 import { exportEditedPdf } from "./pdfEditor";
 import { saveFile } from "@/utils/saveFile";
+import { showNotice } from "@/utils/errorToast";
 import PdfEditor from "./PdfEditor.vue";
 import { listSystemFonts, readSystemFont } from "./systemFonts";
 import { renderPage } from "../shared/pdfjs";
@@ -16,7 +17,7 @@ vi.mock("./systemFonts", async (original) => ({
 
 const bookmarks = vi.hoisted(() => ({ outline: vi.fn(), destination: vi.fn(), pageIndex: vi.fn() }));
 const textBackend = vi.hoisted(() => ({ read: vi.fn(), remove: vi.fn(), fonts: vi.fn(), destroy: vi.fn() }));
-vi.mock("@pdf-lib/fontkit", () => ({ default: { create: (bytes: Uint8Array) => ({ postscriptName: bytes[0] === 2 ? "TestFont" : "DefaultFont", characterSet: [65], ascent: 800, descent: -200, unitsPerEm: 1000, layout: (text: string) => ({ positions: [...text].map(() => ({ xAdvance: 600 })), glyphs: [...text].map(() => ({ advanceWidth: 600 })) }) }) } }));
+vi.mock("@pdf-lib/fontkit", () => ({ default: { create: (bytes: Uint8Array) => ({ postscriptName: bytes[0] === 1 ? "DefaultFont" : "TestFont", characterSet: bytes[0] === 2 ? [65] : [65, 66], ascent: 800, descent: -200, unitsPerEm: 1000, layout: (text: string) => ({ positions: [...text].map(() => ({ xAdvance: 600 })), glyphs: [...text].map(() => ({ advanceWidth: 600 })) }) }) } }));
 vi.mock("./pdfTextClient", () => ({ createPdfTextClient: vi.fn(() => textBackend) }));
 vi.mock("../shared/pdfjs", () => ({
   openPdf: vi.fn(async () => ({ numPages: 2, destroy: vi.fn(), getOutline: bookmarks.outline, getDestination: bookmarks.destination, getPageIndex: bookmarks.pageIndex, getPage: async () => ({ getViewport: () => ({ width: 600, height: 800, transform: [1, 0, 0, -1, 0, 800] }) }) })),
@@ -25,7 +26,7 @@ vi.mock("../shared/pdfjs", () => ({
 vi.mock("../shared/pdf", () => ({ loadPdf: vi.fn(async () => ({})) }));
 vi.mock("./pdfEditor", async (original) => ({ ...await original<typeof import("./pdfEditor")>(), exportEditedPdf: vi.fn() }));
 vi.mock("@/utils/saveFile", () => ({ saveFile: vi.fn(async () => true) }));
-vi.mock("@/utils/errorToast", () => ({ showError: vi.fn() }));
+vi.mock("@/utils/errorToast", () => ({ showError: vi.fn(), showNotice: vi.fn() }));
 
 let dispose: (() => void) | undefined;
 beforeEach(() => {
@@ -152,6 +153,38 @@ it("格式刷可复制原文格式并应用到另一段原文，保留文字和�
   await vi.waitFor(() => expect(exportEditedPdf).toHaveBeenCalled());
   expect(vi.mocked(exportEditedPdf).mock.calls[0][2]).toEqual([
     expect.objectContaining({ text: "AA", originalId: "0:1:0", x: 140, y: 150, fontId: expect.stringMatching(/^embedded/), fontSize: 24, color: "#b5412f" }),
+  ]);
+});
+
+it.each([
+  { fontName: "Helvetica", expectedFontId: "default" },
+  { fontName: "TestFont", expectedFontId: "system:7" },
+])("样本 $fontName 无法覆盖目标字符时仍可应用并导出格式", async ({ fontName, expectedFontId }) => {
+  vi.mocked(listSystemFonts).mockResolvedValue([{ id: 7, family: "TestFont", name: "TestFont", aliases: ["TestFont"], bold: false, italic: false }]);
+  vi.mocked(readSystemFont).mockResolvedValue(new Uint8Array([3]));
+  textBackend.fonts.mockResolvedValue([{ name: "TestFont", bytes: new Uint8Array([2]) }]);
+  textBackend.read.mockResolvedValue([
+    { id: "0:0:0", page: 0, text: "A", x: 40, y: 50, width: 40, height: 32, fontSize: 24, fontName, color: "#b5412f", supported: true },
+    { id: "0:1:0", page: 0, text: "BB", x: 140, y: 150, width: 50, height: 20, fontSize: 14, color: "#141413", supported: true },
+  ]);
+  const root = await mount();
+  await vi.waitFor(() => expect(root.querySelectorAll(".original-text-target")).toHaveLength(2));
+  const [source, target] = root.querySelectorAll(".original-text-target");
+  button(root, "格式刷").click();
+  await nextTick();
+  pointer(source, "pointerdown", 45, 55);
+  await vi.waitFor(() => expect(root.querySelector('[role="status"]')?.textContent).toContain("点击要应用格式的文字"));
+  pointer(target, "pointerdown", 145, 155);
+  await vi.waitFor(() => expect(textBackend.remove).toHaveBeenCalledWith(["0:1:0"]));
+  if (expectedFontId === "default") expect(showNotice).toHaveBeenCalledWith(expect.stringContaining("样本字体不可用"));
+  else {
+    expect(readSystemFont).toHaveBeenCalledWith(7);
+    expect(showNotice).not.toHaveBeenCalled();
+  }
+  button(root, "导出 PDF").click();
+  await vi.waitFor(() => expect(exportEditedPdf).toHaveBeenCalled());
+  expect(vi.mocked(exportEditedPdf).mock.calls[0][2]).toEqual([
+    expect.objectContaining({ text: "BB", originalId: "0:1:0", fontId: expectedFontId, fontSize: 24, color: "#b5412f" }),
   ]);
 });
 

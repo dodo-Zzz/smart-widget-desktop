@@ -45,7 +45,7 @@ const zhCN = {
     clipboard: "剪贴板历史",
     clipboardToggle: "暂停或恢复剪贴板记录",
     quit: "退出",
-    tooltip: "Open Tools 工具百宝箱",
+    tooltip: "Smart Widget 工具百宝箱",
   },
   app: {
     comingSoonTitle: "{name}，敬请期待",

@@ -71,14 +71,19 @@ it("跨页共享文字对象修改第一页后，第二页内容仍然存在", a
   expect(readOriginalPdfText(output, 1)[0].text).toContain("Shared original");
 });
 
-it("隐藏的 OCR 文字层不能被误当成可直接修改的扫描件文字", async () => {
+it("混合页面保留可编辑标题，并保护隐藏的 OCR 文字", async () => {
   const pdf = await PDFDocument.create(), page = pdf.addPage([200, 300]);
+  page.drawText("Visible title", { x: 20, y: 260, size: 14 });
   page.pushOperators(setTextRenderingMode(TextRenderingMode.Invisible));
   page.drawText("Hidden OCR", { x: 20, y: 200, size: 12 });
   const bytes = await pdf.save(), runs = readOriginalPdfText(bytes, 0);
-  expect(runs.length).toBeGreaterThan(0);
-  expect(runs[0].supported).toBe(false);
-  expect(() => removeOriginalPdfText(bytes, [runs[0].id])).toThrow("PDF_TEXT_UNSUPPORTED");
+  expect(runs.map(({ text, supported }) => ({ text, supported }))).toEqual([
+    { text: "Visible title", supported: true },
+    { text: "Hidden OCR", supported: false },
+  ]);
+  expect(() => removeOriginalPdfText(bytes, [runs[1].id])).toThrow("PDF_TEXT_UNSUPPORTED");
+  const output = removeOriginalPdfText(bytes, [runs[0].id]);
+  expect(readOriginalPdfText(output, 0).map(({ text }) => text)).toEqual(["Hidden OCR"]);
 });
 
 

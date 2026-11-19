@@ -90,16 +90,20 @@ export function usePdfEditorFonts(context: FontContext) {
     if (!response.ok) throw new Error(t("document.pdfEditFontMissing"));
     await addFont(new Uint8Array(await response.arrayBuffer()), "default", "");
   };
-  const resolveOriginalFont = async (run: OriginalPdfText, preferEmbedded = false) => {
+  const resolveOriginalFont = async (run: OriginalPdfText, preferEmbedded = false, text = run.text) => {
     const generation = context.generation();
-    if (run.fontName) await ensureOriginalFonts(run.page);
+    if (run.fontName) {
+      try { await ensureOriginalFonts(run.page); }
+      catch (error) { if (!preferEmbedded) throw error; }
+    }
     if (disposed || generation !== context.generation()) return;
     let matching: EditorFont | undefined;
     if (run.fontName) {
       if (preferEmbedded) {
-        const embedded = fonts.value.find((font) => font.id.startsWith("embedded")
-          && fontMatches(font, run.fontName!) && hasCharacters(font, run.text));
-        if (embedded) return embedded;
+        const embedded = fonts.value.filter((font) => font.id.startsWith("embedded") && hasCharacters(font, text));
+        const matching = embedded.find((font) => font.label === run.fontName)
+          ?? embedded.find((font) => fontMatches(font, run.fontName!));
+        if (matching) return matching;
       }
       // 完整本机字体优先于 PDF 子集，避免输入新字符后丢失原字体。
       await ensureSystemFonts();
@@ -107,13 +111,13 @@ export function usePdfEditorFonts(context: FontContext) {
       for (const candidate of matchingSystemFonts(systemFonts.value, run.fontName, run.bold, run.italic)) {
         try {
           const loaded = await loadSystemFont(candidate);
-          if (loaded && hasCharacters(loaded, run.text)) { matching = loaded; break; }
+          if (loaded && hasCharacters(loaded, text)) { matching = loaded; break; }
         } catch { /* 单个字体不可嵌入或无法加载时，继续尝试其他同名字体。 */ }
       }
       matching ??= fonts.value.find((font) => {
         const system = systemFonts.value.find((candidate) => `system:${candidate.id}` === font.id);
         return (!system || (system.bold === !!run.bold && system.italic === !!run.italic))
-          && fontMatches(font, run.fontName!) && hasCharacters(font, run.text);
+          && fontMatches(font, run.fontName!) && hasCharacters(font, text);
       });
     }
     return matching;
@@ -128,5 +132,5 @@ export function usePdfEditorFonts(context: FontContext) {
     for (const font of fonts.value) document.fonts.delete(font.face);
     fonts.value = [];
   });
-  return { fonts, fontId, systemFonts, fontOptions, ensureSystemFonts, ensureFont, addFont, loadSystemFont, resolveOriginalFont, clearEmbeddedFonts };
+  return { fonts, fontId, systemFonts, fontOptions, ensureSystemFonts, ensureFont, addFont, loadSystemFont, resolveOriginalFont, hasCharacters, clearEmbeddedFonts };
 }

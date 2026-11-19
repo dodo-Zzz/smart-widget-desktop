@@ -58,7 +58,7 @@ export const categories: Category[] = [
   {
     id: "document",
     name: "文档与文件",
-    tools: pick("large-file", "word-to-pdf", "word-to-markdown", "pdf-to-word", "word-watermark", "word-unwatermark", "pdf-content-editor", "pdf-page-manager", "pdf-unwatermark", "pdf-unlock", "markdown-editor", "markdown-to-word", "archive", "extract"),
+    tools: pick("large-file", "word-to-pdf", "word-to-markdown", "pdf-to-word", "word-watermark", "word-unwatermark", "pdf-content-editor", "pdf-page-manager", "pdf-unwatermark", "pdf-password-recovery", "markdown-editor", "markdown-to-word", "archive", "extract"),
   },
   { id: "network", name: "网络", tools: network.tools },
 ].map(sortTools);

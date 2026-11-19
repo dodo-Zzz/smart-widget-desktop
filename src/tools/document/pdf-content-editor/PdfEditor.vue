@@ -7,7 +7,7 @@ import AppSelect from "@/components/common/AppSelect.vue";
 import { useWindowEvent } from "@/composables/useWindowEvent";
 import { boxOf, glide } from "@/utils/motion";
 import { saveFile } from "@/utils/saveFile";
-import { showError } from "@/utils/errorToast";
+import { showError, showNotice } from "@/utils/errorToast";
 import { openPdf, type PdfDocument } from "../shared/pdfjs";
 import { loadPdf } from "../shared/pdf";
 import { readPdfOutline, resolveOutlinePage, type PdfOutlineEntry } from "./pdfOutline";
@@ -26,7 +26,7 @@ const pageIndex = ref(0);
 const zoom = ref(1);
 const loading = ref(false), exporting = ref(false);
 const mode = ref<"select" | "original" | "formatPainter" | EditKind>("select");
-const formatPainter = shallowRef<{ format?: PdfTextFormat }>();
+const formatPainter = shallowRef<{ format?: PdfTextFormat; sourceRun?: OriginalPdfText }>();
 const objects = ref<PdfEditObject[]>([]);
 const selectedId = ref<number>();
 const selected = computed(() => objects.value.find((item) => item.id === selectedId.value));
@@ -131,8 +131,8 @@ const color = ref(palette[0]);
 const defaultSize = ref(18);
 const defaultStroke = ref(2);
 const defaultArrowHeadSize = ref(24);
-const loadingFont = ref(false), preparingOriginal = ref(false);
-const { fonts, fontId, systemFonts, fontOptions, ensureSystemFonts, ensureFont, addFont, loadSystemFont, resolveOriginalFont, clearEmbeddedFonts } = usePdfEditorFonts({
+const loadingFont = ref(false), preparingOriginal = ref(false), resolvingPaintFont = ref(false);
+const { fonts, fontId, systemFonts, fontOptions, ensureSystemFonts, ensureFont, addFont, loadSystemFont, resolveOriginalFont, hasCharacters, clearEmbeddedFonts } = usePdfEditorFonts({
   generation: () => token,
   allocateId: () => nextId++,
   readEmbeddedFonts: (page) => ensureTextClient().fonts(page),
@@ -166,21 +166,36 @@ const textWidth = (item: PdfEditObject) => {
   return Math.max(0, ...textLines((item.text || "").replace(/\t/g, "    ")).map((line) =>
     (font?.measure(line, size) ?? 0) + [...line].length * (item.characterSpacing || 0)));
 };
-const paintText = (item: PdfEditObject) => {
+const paintText = async (item: PdfEditObject, sourceRun?: OriginalPdfText, sourceFontId?: string) => {
   const painter = formatPainter.value;
   if (!painter || item.kind !== "text" || !item.text?.trim()) return;
   if (!painter.format) {
-    formatPainter.value = { format: copyTextFormat(item) };
+    const format = copyTextFormat(item);
+    if (sourceRun?.fontName) format.fontId = sourceFontId;
+    formatPainter.value = { format, sourceRun };
     return;
   }
-  const formatted = { ...item, ...painter.format };
-  const font = fonts.value.find((candidate) => candidate.id === (formatted.fontId || "default"));
-  if (!font || [...item.text].some((char) => !/\s/.test(char) && !font.characters.has(char.codePointAt(0)!))) {
+  const generation = token;
+  const existing = objects.value.includes(item);
+  const text = item.text;
+  const fontFor = (id?: string) => fonts.value.find((font) => font.id === id && hasCharacters(font, text));
+  let sourceFont = fontFor(painter.format.fontId);
+  if (!sourceFont && painter.sourceRun?.fontName) {
+    if (resolvingPaintFont.value) return;
+    resolvingPaintFont.value = true;
+    try { sourceFont = await resolveOriginalFont(painter.sourceRun, true, text); }
+    finally { if (generation === token) resolvingPaintFont.value = false; }
+    if (generation !== token || disposed || formatPainter.value !== painter || pageIndex.value !== item.page || exporting.value) return;
+    if (existing && !objects.value.includes(item)) return;
+  }
+  const font = sourceFont ?? fontFor(item.fontId) ?? fontFor("default");
+  if (!font) {
     showError(t("document.pdfEditUnsupportedText"));
     return;
   }
+  const formatted = { ...item, ...painter.format, fontId: font.id };
   const page = pages.value[item.page];
-  const lines = textLines(item.text.replace(/\t/g, "    "));
+  const lines = textLines(text.replace(/\t/g, "    "));
   const size = formatted.fontSize || 18;
   const spacing = formatted.characterSpacing || 0;
   const width = (formatted.textOriginX || 0) + Math.max(...lines.map((line) =>
@@ -191,7 +206,7 @@ const paintText = (item: PdfEditObject) => {
     showError(t("document.pdfEditTextOverflow"));
     return;
   }
-  if (JSON.stringify(copyTextFormat(item)) !== JSON.stringify(painter.format)) {
+  if (JSON.stringify(copyTextFormat(item)) !== JSON.stringify(copyTextFormat(formatted))) {
     commitHistory();
     formatted.width = Math.min(page.width - item.x, Math.max(item.width, width + 2));
     formatted.height = Math.min(page.height - item.y, Math.max(item.height, height));
@@ -201,6 +216,7 @@ const paintText = (item: PdfEditObject) => {
   }
   formatPainter.value = undefined;
   mode.value = "select";
+  if (!sourceFont) showNotice(t("document.pdfEditPainterFontFallback"));
 };
 const growText = (item: PdfEditObject, event: Event) => {
   const textarea = event.target as HTMLTextAreaElement;
@@ -306,6 +322,7 @@ const reset = () => {
   textClient?.destroy(); textClient = undefined;
   void redactedDoc.value?.destroy(); redactedDoc.value = undefined;
   originalText.value = new Map(); successfulOriginalIds.clear(); preparingOriginal.value = false;
+  resolvingPaintFont.value = false;
   clearEmbeddedFonts();
   readingOriginal.value = false; removingOriginal.value = false;
   pageElements.clear(); stage.value = undefined; visiblePages.value = [0];
@@ -382,25 +399,21 @@ watch(() => originalIds.value.join("|"), () => {
   });
 });
 const editOriginal = async (run: OriginalPdfText) => {
-  if (readingOriginal.value || removingOriginal.value || preparingOriginal.value || exporting.value) return;
+  if (readingOriginal.value || removingOriginal.value || preparingOriginal.value || resolvingPaintFont.value || exporting.value) return;
   if (!run.supported) { showError(t("document.pdfEditUnsupportedOriginal")); return; }
   finishText(); endProperty();
   const snapshot = copyObjects(), generation = token, intentMode = mode.value;
   const painter = formatPainter.value;
   preparingOriginal.value = true;
   try {
-    const matching = run.fontName ? await resolveOriginalFont(run, !!painter && !painter.format) : undefined;
+    const matching = run.fontName ? await resolveOriginalFont(run, !!painter) : undefined;
     if (generation !== token || disposed || mode.value !== intentMode || painter !== formatPainter.value || pageIndex.value !== run.page) return;
-    if (painter && !painter.format && run.fontName && !matching) {
-      showError(t("document.pdfEditFontMissing"));
-      return;
-    }
     const item = clampObject({ ...fresh("text", { x: run.x, y: run.y }), originalId: run.id, originalFontName: run.fontName, text: run.text, fontId: matching?.id || "default", fontSize: run.fontSize, color: run.color,
       baseline: run.baseline === undefined ? undefined : run.baseline - run.y, lineHeight: run.lineHeight,
       textOriginX: run.originX === undefined ? 0 : run.originX - run.x, characterSpacing: run.characterSpacing, horizontalScale: run.horizontalScale,
       width: Math.min(metadata.value.width - run.x, Math.max(run.width + 2, 4)), height: Math.max(run.height, run.text.split("\n").length * (run.lineHeight || run.fontSize * 1.25)) }, metadata.value);
     item.originalState = originalState(item);
-    if (painter) { paintText(item); return; }
+    if (painter) { await paintText(item, run, matching?.id); return; }
     objects.value.push(item);
     await editText(item, snapshot);
   } catch (error) { if (generation === token && !disposed) showError(error); }
@@ -473,7 +486,7 @@ const begin = (event: PointerEvent, item?: PdfEditObject, resize = false, forceM
   if (event.button !== 0 || (rendering.value && !pageUrl.value) || exporting.value || !metadata.value) return;
   if (mode.value === "formatPainter") {
     event.preventDefault();
-    if (item && !preparingOriginal.value && !removingOriginal.value) paintText(item);
+    if (item && !preparingOriginal.value && !removingOriginal.value) void paintText(item).catch(showError);
     return;
   }
   // 拖动或缩放未修改原文时保留临时对象，不能在失焦处理中提前删除。
@@ -542,6 +555,7 @@ const textStyle = (item: PdfEditObject) => {
 };
 const family = (id?: string) => fonts.value.find((font) => font.id === id)?.family || fonts.value[0]?.family;
 const save = async () => {
+  if (preparingOriginal.value || resolvingPaintFont.value) return;
   finishText(); endProperty(); if (!source.value || exporting.value || loadingFont.value || gesture) return;
   exporting.value = true;
   try {
@@ -589,7 +603,7 @@ onBeforeUnmount(() => {
             <div class="zoom-controls">
               <button class="icon-btn" :disabled="zoom <= 0.25" :title="t('document.pdfEditZoomOut')" @click="changeZoom(zoom - 0.25)"><ZoomOut :size="16" /></button><span class="zoom-value">{{ Math.round(zoom * 100) }}%</span><button class="icon-btn" :disabled="zoom >= 2" :title="t('document.pdfEditZoomIn')" @click="changeZoom(zoom + 0.25)"><ZoomIn :size="16" /></button>
             </div>
-            <button class="btn small primary export-button" :disabled="exporting || loading" @click="save"><LoaderCircle v-if="exporting" :size="15" class="spin" /><Save v-else :size="15" />{{ t("document.pdfEditExport") }}</button>
+            <button class="btn small primary export-button" :disabled="exporting || loading || preparingOriginal || resolvingPaintFont" @click="save"><LoaderCircle v-if="exporting" :size="15" class="spin" /><Save v-else :size="15" />{{ t("document.pdfEditExport") }}</button>
             <button class="icon-btn close-button" :disabled="exporting" :title="t('document.pdfEditClose')" @click="reset"><X :size="17" /></button>
           </div>
         </div>
@@ -642,7 +656,7 @@ onBeforeUnmount(() => {
             <template v-if="index === pageIndex && ['select', 'text', 'original', 'formatPainter'].includes(mode) && !readingOriginal">
               <button v-for="run in currentOriginalText" :key="run.id" class="original-text-target" :class="{ unsupported: !run.supported }" :style="{ left: `${run.x * zoom}px`, top: `${run.y * zoom}px`, width: `${run.width * zoom}px`, height: `${run.height * zoom}px` }" :title="run.supported ? run.text : t('document.pdfEditUnsupportedOriginal')" :aria-label="run.text" @pointerdown.stop.prevent="editOriginal(run)" @click="mode === 'formatPainter' && $event.detail === 0 && editOriginal(run)" />
             </template>
-            <div v-for="item in objects.filter((object) => object.page === index)" :key="item.id" class="edit-object" :class="{ 'text-kind': item.kind === 'text', selected: item.id === selectedId && ['select', 'text', 'original'].includes(mode) }" :style="objectStyle(item)" @pointerdown.stop="activatePage($event, index, item)" @dblclick.stop="item.kind === 'text' && editText(item)">
+            <div v-for="item in objects.filter((object) => object.page === index)" :key="item.id" class="edit-object" :class="{ 'text-kind': item.kind === 'text', selected: item.id === selectedId && ['select', 'text', 'original'].includes(mode) }" :style="objectStyle(item)" @pointerdown.stop="activatePage($event, index, item)" @dblclick.stop="mode !== 'formatPainter' && item.kind === 'text' && editText(item)">
               <textarea v-if="item.kind === 'text' && editingId === item.id" v-model="item.text" class="inline-text" wrap="off" :class="{ 'original-pristine': originalStillVisible(item) }" :style="textStyle(item)" :placeholder="t('document.pdfEditTypeHere')" :aria-label="t('document.pdfEditText')" @input="growText(item, $event)" @pointerdown.stop @dblclick.stop @blur="blurText($event)" />
               <div v-else-if="item.kind === 'text'" class="text-object" :class="{ 'original-pristine': originalStillVisible(item) }" :style="textStyle(item)">{{ item.text }}</div>
               <img v-else-if="item.kind === 'image'" :src="item.image" alt="" draggable="false" />

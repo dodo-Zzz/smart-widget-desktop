@@ -10,7 +10,7 @@ defineProps<{ leaving: boolean }>();
     <div class="content">
       <div class="brand">
         <AppLogo :size="48" />
-        <span>Open Tools</span>
+        <span>Smart Widget</span>
       </div>
       <div class="cats">
         <picture v-for="(cat, index) in cats" :key="index">

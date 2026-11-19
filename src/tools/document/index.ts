@@ -8,12 +8,12 @@ import wordUnwatermark from "./word-unwatermark";
 import pdfEditor from "./pdf-content-editor";
 import pdfPages from "./pdf-page-manager";
 import pdfUnwatermark from "./pdf-unwatermark";
-import pdfUnlock from "./pdf-unlock";
+import pdfPasswordRecovery from "./pdf-password-recovery";
 
 const document: Category = {
   id: "document",
   name: "文档",
-  tools: [largeFile, wordToPdf, wordToMarkdown, pdfToWord, wordWatermark, wordUnwatermark, pdfEditor, pdfPages, pdfUnwatermark, pdfUnlock],
+  tools: [largeFile, wordToPdf, wordToMarkdown, pdfToWord, wordWatermark, wordUnwatermark, pdfEditor, pdfPages, pdfUnwatermark, pdfPasswordRecovery],
 };
 
 export default document;

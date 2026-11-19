@@ -1,6 +1,6 @@
 # Smart Widget 工具百宝箱
 
-Windows 桌面版，保留 Open Tools 的主页、日历、时区转换与世界时间、计算换算、图片工具以及文档与文件工具。新增人民币汇率换算、PDF 文字格式刷和使用已知密码另存 PDF 的功能。
+Windows 桌面版包含主页、日历、时区转换与世界时间、计算换算、图片工具以及文档与文件工具，并提供人民币汇率换算、PDF 文字格式刷和 PDF 密码找回指引。
 
 - [下载安装包](https://github.com/dodo-Zzz/smart-widget-desktop/releases/latest)，在 Assets 中选择 `*-setup.exe`。
 - 已安装的版本可用应用顶部的检查更新按钮获取新版本。
