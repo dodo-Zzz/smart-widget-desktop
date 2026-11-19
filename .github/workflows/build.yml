@@ -1,0 +1,121 @@
+# Windows installer and signed updater artifacts for Smart Widget.
+name: Build Windows
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# 发布版本（推送标签）排队依次进行，不取消：两个版本同时打包时，先开始的可能后完成，
+# 会把「最新版本」和在线更新文件改回旧版本；其他构建同一分支只保留最新一次
+concurrency:
+  group: ${{ startsWith(github.ref, 'refs/tags/') && 'release' || format('build-{0}', github.ref) }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      # 使用随仓库保存并校验过的官方工具，首次构建也不依赖上游 Release 下载。
+      - name: 从仓库准备 Windows 打包工具
+        shell: pwsh
+        run: ./scripts/prepare-windows-tools.ps1
+
+      - run: npm ci
+
+      - name: 类型检查与单元测试
+        run: |
+          npm run typecheck
+          npm test -- --testTimeout=30000
+
+      # 版本说明来自标签附带的文字：git tag -a v0.2.0 -m "更新内容"
+      # 只写了版本号或没写时，用上一个版本以来的 feat / fix / perf 提交生成（显示在程序的更新对话框里）
+      - name: 读取版本说明
+        id: notes
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          git fetch --tags --force
+          notes=$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME")
+          trimmed=$(printf '%s' "$notes" | tr -d '[:space:]')
+          if [ -z "$trimmed" ] || [ "$trimmed" = "$GITHUB_REF_NAME" ] || [ "$trimmed" = "${GITHUB_REF_NAME#v}" ]; then
+            prev=$(git tag -l 'v*' --sort=-v:refname | grep -x -A1 "$GITHUB_REF_NAME" | sed -n 2p)
+            notes=$(node scripts/release-notes.mjs "${prev:+$prev..}$GITHUB_REF_NAME")
+          fi
+          {
+            echo "body<<NOTES_EOF"
+            printf '%s\n' "$notes"
+            echo "NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # AI 工具加载的 onnxruntime.dll 依赖 VC++ 运行库，没装过 VC++ 运行库的电脑会加载失败。
+      # 从 Visual Studio 自带的可再发行目录取出这几个文件，由 tauri.vcredist.conf.json 打包到安装目录（和 open-tools.exe 放在一起）
+      - name: 准备 VC++ 运行库
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          # 可能装了多个版本（文件夹名如 14.44.35112），取最新的
+          $crt = Get-ChildItem "$vs\VC\Redist\MSVC\*\x64\Microsoft.VC*.CRT" -Directory |
+            Where-Object { $_.Parent.Parent.Name -match '^\d+(\.\d+)+$' } |
+            Sort-Object { [version]$_.Parent.Parent.Name } | Select-Object -Last 1
+          if (-not $crt) { throw "没有找到 VC++ 可再发行目录" }
+          Write-Host "VC++ 运行库来源：$($crt.FullName)"
+          New-Item -ItemType Directory -Force src-tauri/vcredist | Out-Null
+          foreach ($name in 'msvcp140.dll', 'msvcp140_1.dll', 'vcruntime140.dll', 'vcruntime140_1.dll') {
+            Copy-Item (Join-Path $crt.FullName $name) src-tauri/vcredist -ErrorAction Stop
+          }
+          Get-ChildItem src-tauri/vcredist | Select-Object Name, Length, @{ n = 'Version'; e = { $_.VersionInfo.FileVersion } }
+
+      - name: 构建 Windows 程序
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 更新包签名私钥，只在发布版本时用到
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          # 仅在推送标签时创建 Release 并生成签名的更新文件，其余情况只编译
+          tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+          # 始终带上 VC++ 运行库；发布版本时再加上生成更新文件的配置
+          args: ${{ startsWith(github.ref, 'refs/tags/') && '--config src-tauri/tauri.vcredist.conf.json --config src-tauri/tauri.release.conf.json' || '--config src-tauri/tauri.vcredist.conf.json' }}
+          releaseName: "Smart Widget ${{ github.ref_name }}"
+          releaseBody: ${{ steps.notes.outputs.body || '下载 *-setup.exe 安装即可使用。' }}
+          includeUpdaterJson: true
+          releaseDraft: false
+
+      # 「最新版本」始终是版本号最大的那个（GitHub 默认把最后发布的标为最新）
+      - name: 标记最新版本
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          latest=$(git tag -l 'v*' --sort=-v:refname | head -1)
+          echo "版本号最大的标签：$latest"
+          gh release edit "$latest" --latest || echo "没有找到 $latest 的发布，跳过"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: open-tools-windows
+          path: |
+            src-tauri/target/release/open-tools.exe
+            src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
