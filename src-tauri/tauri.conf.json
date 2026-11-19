@@ -1,0 +1,55 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Smart Widget",
+  "version": "../package.json",
+  "identifier": "com.dodozzz.smartwidget",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Smart Widget 工具百宝箱",
+        "width": 1200,
+        "height": 780,
+        "minWidth": 900,
+        "minHeight": 600,
+        "center": true,
+        "dragDropEnabled": false
+      }
+    ],
+    "security": {
+      "csp": null,
+      "assetProtocol": { "enable": true, "scope": [] }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "resources": {
+      "ai-runtime/onnxruntime.dll": "ai-runtime/onnxruntime.dll",
+      "ai-runtime/DirectML.dll": "ai-runtime/DirectML.dll"
+    },
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDUyMjFBNDA1RTM2RDhERkUKUldUK2pXM2pCYVFoVXN4bVJrYmFrSGZxclZyTXNnL3ZmUC9Zb1dmYlNqZ3hvbVBQOXhzT2haSXYK",
+      "endpoints": [
+        "https://github.com/dodo-Zzz/smart-widget-desktop/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}

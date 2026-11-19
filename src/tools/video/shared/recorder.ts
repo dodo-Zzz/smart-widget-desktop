@@ -1,0 +1,201 @@
+import { isTauri } from "@tauri-apps/api/core";
+import { t } from "@/locales";
+
+/**
+ * 视频录制：取得屏幕或摄像头画面，按需混入系统声音和麦克风，交给浏览器自带的 MediaRecorder 录制。
+ */
+
+export type RecordSource = "screen" | "camera";
+/** 清晰度：画面最高 720P、1080P，或者保持原始大小 */
+export type RecordQuality = "720" | "1080" | "original";
+export type RecordFrameRate = 15 | 30 | 60;
+
+export const QUALITY_OPTIONS: { value: RecordQuality; label: string }[] = [
+  { value: "720", label: "720P" },
+  { value: "1080", label: "1080P" },
+  { value: "original", label: "" },
+];
+export const FRAME_RATES: RecordFrameRate[] = [15, 30, 60];
+
+/**
+ * 码率（每秒比特数）。浏览器默认的码率很低，屏幕上的文字和细线会糊掉，所以按清晰度给足：
+ * 720P 5 Mbps、1080P 10 Mbps、原画 20 Mbps（30 帧）；60 帧多 50%，15 帧少 40%
+ */
+export function videoBitrate(quality: RecordQuality, frameRate: RecordFrameRate): number {
+  const base = { "720": 5_000_000, "1080": 10_000_000, original: 20_000_000 }[quality];
+  return Math.round(base * (frameRate === 60 ? 1.5 : frameRate === 15 ? 0.6 : 1));
+}
+
+/** 画面的限制条件：最高帧率；720P、1080P 时限制高度（宽度按比例缩小） */
+function videoConstraints(quality: RecordQuality, frameRate: RecordFrameRate): MediaTrackConstraints {
+  const c: MediaTrackConstraints = { frameRate: { ideal: frameRate, max: frameRate } };
+  if (quality !== "original") c.height = { max: Number(quality) };
+  return c;
+}
+
+export interface RecordOptions {
+  source: RecordSource;
+  /** 系统声音：只有录屏幕时可用，需要在系统的选择窗口里勾选「分享音频」 */
+  systemAudio: boolean;
+  microphone: boolean;
+  quality: RecordQuality;
+  frameRate: RecordFrameRate;
+  /** 画面左右翻转（录摄像头时像照镜子），录下来的视频也是翻转的 */
+  mirror?: boolean;
+}
+
+/**
+ * 按优先顺序尝试的格式：优先 MP4（兼容性好、可以拖动进度），不支持时用 WebM。
+ * H.264 优先用 High 档次，同样的码率画质比 Baseline 好；级别由浏览器按画面大小自动调整
+ */
+const FORMATS = [
+  { mimeType: "video/mp4;codecs=avc1.640028,mp4a.40.2", ext: "mp4" },
+  { mimeType: "video/mp4;codecs=avc1.42E01F,mp4a.40.2", ext: "mp4" },
+  { mimeType: "video/mp4;codecs=avc1,opus", ext: "mp4" },
+  { mimeType: "video/mp4", ext: "mp4" },
+  { mimeType: "video/webm;codecs=vp9,opus", ext: "webm" },
+  { mimeType: "video/webm;codecs=vp8,opus", ext: "webm" },
+  { mimeType: "video/webm", ext: "webm" },
+];
+
+export function pickFormat(isSupported: (type: string) => boolean = (t) => MediaRecorder.isTypeSupported(t)) {
+  return FORMATS.find((f) => isSupported(f.mimeType)) ?? null;
+}
+
+/** 录像 1 · 14:05 */
+export function recordingName(n: number, date = new Date()) {
+  const pad = (v: number) => String(v).padStart(2, "0");
+  return t("video.recordingName", { n, time: `${pad(date.getHours())}:${pad(date.getMinutes())}` });
+}
+
+/** 文件名里不能有空格、冒号等：录像 1 · 14:05 → 录像_1_14_05.mp4 */
+export const recordingFileName = (name: string, ext: string) => `${name.replace(/[ ·:]+/g, "_")}.${ext}`;
+
+export interface Capture {
+  /** 交给 MediaRecorder 的流：一条画面，最多一条（混合后的）声音 */
+  stream: MediaStream;
+  /** 画面轨道，用户在系统提示条上点「停止共享」时会结束 */
+  video: MediaStreamTrack;
+  /** 想录系统声音但没有拿到（选择窗口里没有勾选分享音频，或选的是单个窗口） */
+  missingSystemAudio: boolean;
+  /** 要求翻转但当前环境不支持，录下来的是原始画面 */
+  mirrorUnsupported: boolean;
+  /** 停止所有设备，释放混音用的资源 */
+  release: () => void;
+}
+
+// Chromium 提供的逐帧处理画面的接口，TypeScript 自带的类型里还没有
+declare const MediaStreamTrackProcessor: (new (init: { track: MediaStreamTrack }) => { readable: ReadableStream<VideoFrame> }) | undefined;
+declare const MediaStreamTrackGenerator: (new (init: { kind: "video" }) => MediaStreamTrack & { writable: WritableStream<VideoFrame> }) | undefined;
+
+/** 把画面逐帧左右翻转，得到新的画面轨道；不支持时返回 null */
+function mirrorTrack(track: MediaStreamTrack): MediaStreamTrack | null {
+  if (typeof MediaStreamTrackProcessor === "undefined" || typeof MediaStreamTrackGenerator === "undefined") return null;
+  const processor = new MediaStreamTrackProcessor({ track });
+  const generator = new MediaStreamTrackGenerator({ kind: "video" });
+  let canvas: OffscreenCanvas | null = null;
+  let ctx: OffscreenCanvasRenderingContext2D | null = null;
+  const flip = new TransformStream<VideoFrame, VideoFrame>({
+    transform(frame, controller) {
+      const w = frame.displayWidth;
+      const h = frame.displayHeight;
+      if (!canvas || canvas.width !== w || canvas.height !== h) {
+        canvas = new OffscreenCanvas(w, h);
+        ctx = canvas.getContext("2d")!;
+        ctx.setTransform(-1, 0, 0, 1, w, 0);
+      }
+      ctx!.drawImage(frame, 0, 0);
+      controller.enqueue(new VideoFrame(canvas, { timestamp: frame.timestamp }));
+      frame.close();
+    },
+  });
+  processor.readable.pipeThrough(flip).pipeTo(generator.writable).catch(() => {});
+  return generator;
+}
+
+/** 打开画面和声音；用户取消或没有权限时抛出错误（错误信息可以直接显示） */
+export async function openCapture(o: RecordOptions): Promise<Capture> {
+  const owned: MediaStream[] = [];
+  const release = () => owned.forEach((s) => s.getTracks().forEach((t) => t.stop()));
+  try {
+    let main: MediaStream;
+    if (o.source === "screen") {
+      try {
+        // 选择窗口默认打开「整个屏幕」：只有整个屏幕才能录到系统声音
+        const video = { ...videoConstraints(o.quality, o.frameRate), displaySurface: "monitor" } as MediaTrackConstraints;
+        main = await navigator.mediaDevices.getDisplayMedia({ video, audio: o.systemAudio });
+      } catch (e) {
+        throw new Error(e instanceof DOMException && e.name === "NotAllowedError" ? t("video.screenCancelled") : t("video.screenFailed"));
+      }
+    } else {
+      try {
+        // 摄像头按清晰度要求画面大小，原画时取摄像头能给的最大值
+        const height = o.quality === "original" ? 2160 : Number(o.quality);
+        main = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: Math.round((height * 16) / 9) }, height: { ideal: height }, frameRate: { ideal: o.frameRate } },
+          audio: o.microphone,
+        });
+      } catch {
+        throw new Error(t("video.cameraFailed"));
+      }
+    }
+    owned.push(main);
+
+    const audioTracks = main.getAudioTracks();
+    // 录屏幕时麦克风单独打开
+    if (o.source === "screen" && o.microphone) {
+      try {
+        const mic = await navigator.mediaDevices.getUserMedia({ audio: true });
+        owned.push(mic);
+        audioTracks.push(...mic.getAudioTracks());
+      } catch {
+        throw new Error(t("video.micFailed"));
+      }
+    }
+
+    const video = main.getVideoTracks()[0];
+    const missingSystemAudio = o.source === "screen" && o.systemAudio && main.getAudioTracks().length === 0;
+    // 翻转后的画面单独放进一个流，释放时一起停掉
+    const mirrored = o.mirror ? mirrorTrack(video) : null;
+    if (mirrored) owned.push(new MediaStream([mirrored]));
+    const recorded = mirrored ?? video;
+    const mirrorUnsupported = !!o.mirror && !mirrored;
+    if (audioTracks.length <= 1) {
+      return { stream: new MediaStream([recorded, ...audioTracks]), video, missingSystemAudio, mirrorUnsupported, release };
+    }
+
+    // 系统声音和麦克风都有：混成一条声音
+    const ctx = new AudioContext();
+    const mixed = ctx.createMediaStreamDestination();
+    for (const t of audioTracks) ctx.createMediaStreamSource(new MediaStream([t])).connect(mixed);
+    return {
+      stream: new MediaStream([recorded, ...mixed.stream.getAudioTracks()]),
+      video,
+      missingSystemAudio,
+      mirrorUnsupported,
+      release: () => {
+        release();
+        ctx.close();
+      },
+    };
+  } catch (e) {
+    release();
+    throw e;
+  }
+}
+
+// ---------- HDR ----------
+// 屏幕开着 HDR 时，浏览器截到的画面亮度被放大（浅色变成纯白），录出来整体发白，换截屏方式也一样。
+// 桌面版可以在录制期间临时关闭 HDR，录完恢复（Rust 调用 Windows 的显示设置接口）；网页版只能提醒用户自己关
+
+/** 桌面版可以由程序开关 HDR */
+export const hdrControllable = isTauri();
+
+const invokeHdr = async <T>(cmd: string): Promise<T> => (await import("@tauri-apps/api/core")).invoke<T>(cmd);
+
+/** 是否有屏幕开着 HDR；出错时当作没有，照常录制 */
+export const hdrEnabled = () => invokeHdr<boolean>("hdr_enabled").catch(() => false);
+/** 临时关闭 HDR，返回关掉的屏幕数量 */
+export const disableHdr = () => invokeHdr<number>("hdr_disable").catch(() => 0);
+/** 恢复被临时关闭的 HDR */
+export const restoreHdr = () => invokeHdr<void>("hdr_restore").catch(() => {});

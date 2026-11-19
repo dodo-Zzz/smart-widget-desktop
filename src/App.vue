@@ -1,0 +1,239 @@
+<script setup lang="ts">
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
+import { localizedCategories } from "@/locales/tools";
+import { useStoredRef } from "@/composables/useStoredRef";
+import { useTheme } from "@/composables/useTheme";
+import AppHeader from "@/components/layout/AppHeader.vue";
+import AppSidebar from "@/components/layout/AppSidebar.vue";
+import MobileNavigation, { type MobilePage } from "@/components/layout/MobileNavigation.vue";
+import LaunchIntro from "@/components/layout/LaunchIntro.vue";
+import HomePage from "@/components/layout/HomePage.vue";
+import { rememberRecentTool } from "@/composables/toolLibrary";
+import ToolWorkspace from "@/components/layout/ToolWorkspace.vue";
+import EmptyState from "@/components/common/EmptyState.vue";
+import CommandPalette from "@/components/common/CommandPalette.vue";
+import UpdateDialog from "@/components/layout/UpdateDialog.vue";
+import { useUpdater } from "@/composables/useUpdater";
+import ClockAlerts from "@/components/layout/ClockAlerts.vue";
+import AppToast from "@/components/layout/AppToast.vue";
+import { calendarDesktop, startCalendarReminders } from "@/tools/utility/calendar/calendarStore";
+import { categories as allCategories, categoriesForPlatform } from "@/tools";
+import { restoreCategorySelection } from "@/tools/categorySelection";
+import { getAppPlatform } from "@/utils/platform";
+
+const { t } = useI18n();
+const { theme, toggleTheme } = useTheme();
+
+const platform = getAppPlatform();
+const editionCategories = new Set(["time", "calc", "image", "document"]);
+const editionTimeTools = new Set(["calendar", "timezone"]);
+const categories = computed(() => categoriesForPlatform(localizedCategories.value, platform)
+  .filter((category) => editionCategories.has(category.id))
+  .map((category) => category.id === "time"
+    ? { ...category, tools: category.tools.filter((tool) => editionTimeTools.has(tool.id)) }
+    : category));
+
+// 手机端使用独立的页面式导航，桌面端继续使用顶部分类 + 左侧工具栏。
+const mobileMedia = window.matchMedia("(max-width: 720px)");
+const isMobile = ref(mobileMedia.matches);
+const mobilePage = ref<MobilePage>("home");
+const homeOpen = ref(true);
+const showingHome = computed(() => isMobile.value ? mobilePage.value === "home" : homeOpen.value);
+const openHome = () => { homeOpen.value = true; mobilePage.value = "home"; };
+const onMobileChange = (event: MediaQueryListEvent) => (isMobile.value = event.matches);
+onMounted(() => mobileMedia.addEventListener("change", onMobileChange));
+onBeforeUnmount(() => mobileMedia.removeEventListener("change", onMobileChange));
+
+// ---------- 当前分类与工具（会被记住，下次打开时恢复） ----------
+const activeCategoryId = useStoredRef("category", categories.value[0].id);
+/** 每个分类上次选中的工具 */
+const activeToolByCategory = useStoredRef<Record<string, string>>("toolByCategory", {});
+const restoredSelection = restoreCategorySelection(allCategories, activeCategoryId.value, activeToolByCategory.value);
+activeCategoryId.value = restoredSelection.categoryId;
+if (JSON.stringify(restoredSelection.tools) !== JSON.stringify(activeToolByCategory.value)) {
+  activeToolByCategory.value = restoredSelection.tools;
+}
+const sidebarCollapsed = useStoredRef("sidebarCollapsed", false);
+
+const activeCategory = computed(
+  () => categories.value.find((c) => c.id === activeCategoryId.value) ?? categories.value[0],
+);
+const activeTool = computed(() => {
+  const tools = activeCategory.value.tools;
+  const id = activeToolByCategory.value[activeCategory.value.id];
+  return tools.find((t) => t.id === id) ?? tools[0];
+});
+
+const selectTool = (categoryId: string, toolId: string) => {
+  activeCategoryId.value = categoryId;
+  activeToolByCategory.value[categoryId] = toolId;
+  homeOpen.value = false;
+  if (isMobile.value) mobilePage.value = "tool";
+};
+
+const selectCategory = (id: string) => {
+  activeCategoryId.value = id;
+  homeOpen.value = false;
+};
+watch(
+  () => (!isMobile.value && !homeOpen.value || isMobile.value && mobilePage.value === "tool") ? activeTool.value?.id : undefined,
+  (id) => { if (id) rememberRecentTool(id); },
+);
+
+const pickSearchTool = (categoryId: string, toolId: string) => {
+  selectTool(categoryId, toolId);
+  searchOpen.value = false;
+};
+
+const openClock = () => {
+  selectTool("time", "clock");
+};
+
+// 主窗口隐藏到托盘时不会卸载；完全退出后再次启动才会重新播放。
+const introPhase = ref<"playing" | "leaving" | "done">("playing");
+let introFrame = 0;
+let playTimer = 0;
+let finishTimer = 0;
+onMounted(() => {
+  introFrame = requestAnimationFrame(() => {
+    playTimer = window.setTimeout(() => {
+      introPhase.value = "leaving";
+      finishTimer = window.setTimeout(() => (introPhase.value = "done"), 1500);
+    }, 2000);
+  });
+});
+onBeforeUnmount(() => {
+  cancelAnimationFrame(introFrame);
+  clearTimeout(playTimer);
+  clearTimeout(finishTimer);
+});
+
+// ---------- 全局搜索（Ctrl + K） ----------
+const searchOpen = ref(false);
+
+const onKeydown = (e: KeyboardEvent) => {
+  if (introPhase.value !== "done") return;
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+    e.preventDefault();
+    searchOpen.value = !searchOpen.value;
+  }
+};
+onMounted(() => window.addEventListener("keydown", onKeydown));
+onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
+
+// ---------- 在线更新：启动几秒后在后台检查，之后定时检查，发现新版本时弹出更新对话框（见 useUpdater） ----------
+const { supported: updaterSupported, startAutoCheck, dialogOpen: updateOpen } = useUpdater();
+onMounted(startAutoCheck);
+
+if (calendarDesktop) {
+  const stopCalendarReminders = startCalendarReminders();
+  onBeforeUnmount(stopCalendarReminders);
+}
+
+</script>
+
+<template>
+  <div class="app">
+    <AppHeader
+      :inert="introPhase !== 'done'"
+      :categories="categories"
+      :active-id="showingHome ? 'home' : activeCategory.id"
+      :theme="theme"
+      :compact="!showingHome && sidebarCollapsed"
+      @select="selectCategory"
+      @home="openHome"
+      @toggle-theme="toggleTheme"
+      @open-search="searchOpen = true"
+    />
+    <div v-if="!isMobile" class="body" :inert="introPhase !== 'done'">
+      <div class="sidebar-region" :class="{ compact: sidebarCollapsed, hidden: homeOpen }" :inert="homeOpen" :aria-hidden="homeOpen">
+        <AppSidebar
+          :category="activeCategory"
+          :active-id="activeTool?.id"
+          :collapsed="sidebarCollapsed"
+          @select="selectTool(activeCategory.id, $event)"
+          @toggle="sidebarCollapsed = !sidebarCollapsed"
+          @open-update="updateOpen = true"
+        />
+      </div>
+      <main class="main">
+        <!-- 切换工具时保留之前工具的输入和结果，最多缓存 12 个 -->
+        <ToolWorkspace
+          :home="homeOpen"
+          :categories="categories"
+          :tool="activeTool"
+          @select="selectTool"
+          @search="searchOpen = true"
+        />
+        <EmptyState
+          v-if="!homeOpen && !activeTool"
+          :title="t('app.comingSoonTitle', { name: activeCategory.name })"
+          :description="t('app.comingSoonDesc')"
+        />
+      </main>
+    </div>
+    <MobileNavigation
+      v-else
+      v-model:page="mobilePage"
+      :inert="introPhase !== 'done'"
+      :categories="categories"
+      :active-category-id="activeCategory.id"
+      :active-tool="activeTool"
+      @select-category="activeCategoryId = $event"
+      @select-tool="selectTool"
+    >
+      <template #home>
+        <HomePage :categories="categories" embedded @select="selectTool" @search="searchOpen = true" />
+      </template>
+    </MobileNavigation>
+
+    <Transition name="modal">
+      <CommandPalette
+        v-if="searchOpen"
+        :categories="categories"
+        @pick="pickSearchTool"
+        @close="searchOpen = false"
+      />
+    </Transition>
+
+    <Transition name="modal">
+      <UpdateDialog v-if="updaterSupported && updateOpen" @close="updateOpen = false" />
+    </Transition>
+    <ClockAlerts @open="openClock" />
+    <!-- 各工具的报错统一在窗口上方提示，见 utils/errorToast.ts -->
+    <AppToast />
+    <LaunchIntro v-if="introPhase !== 'done'" :leaving="introPhase === 'leaving'" />
+  </div>
+</template>
+
+<style scoped>
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+.sidebar-region {
+  display: flex;
+  width: 240px;
+  flex-shrink: 0;
+  overflow: hidden;
+  transition: width var(--dur-slow) var(--ease-out);
+}
+.sidebar-region.compact { width: 56px; }
+.sidebar-region.hidden { width: 0; }
+/* 内边距由工具区自己控制，工具栏可以贴边铺满 */
+.main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+</style>

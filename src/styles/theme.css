@@ -1,0 +1,82 @@
+/* 设计变量：颜色、阴影、字体。改主题只需要改这里 */
+:root {
+  /* 暖色纸张感：米白底、陶土色强调 */
+  --bg: #faf9f5;
+  --bg-sunken: #f5f4ee;
+  --surface: #ffffff;
+  --hover: rgba(31, 30, 29, 0.05);
+  --active: rgba(31, 30, 29, 0.08);
+  --border: rgba(31, 30, 29, 0.12);
+  --border-strong: rgba(31, 30, 29, 0.22);
+  --text: #141413;
+  --text-2: #5e5d59;
+  --text-3: #8f8d86;
+  --accent: #c96442;
+  --accent-hover: #b55a3b;
+  --accent-soft: rgba(201, 100, 66, 0.1);
+  --danger: #b5412f;
+  --danger-soft: rgba(181, 65, 47, 0.08);
+  --success: #4c7a4f;
+  --success-soft: rgba(76, 122, 79, 0.1);
+  --warning: #9a6b1f;
+  --warning-soft: rgba(154, 107, 31, 0.1);
+  /* 拖动对齐时的参考线，和选中框的主色区分开 */
+  --guide: #e0358a;
+
+  /* 代码/数据高亮 */
+  --syntax-key: #3b5a7a;
+  --syntax-string: #4c7a4f;
+  --syntax-number: #b55a3b;
+  --syntax-literal: #6a5a9c;
+
+  --shadow-sm: 0 1px 2px rgba(31, 30, 29, 0.04);
+  --shadow: 0 2px 8px rgba(31, 30, 29, 0.06);
+  --shadow-lg: 0 16px 48px rgba(31, 30, 29, 0.16);
+  --modal-scrim: rgba(20, 20, 19, 0.28);
+  --radius: 10px;
+  --tool-search-width: 208px;
+
+  /* 动效：平滑减速、不回弹（见 motion.css） */
+  --ease-out: cubic-bezier(0.32, 0.72, 0, 1);
+  --dur-fast: 120ms;
+  --dur: 200ms;
+  --dur-slow: 300ms;
+
+  --font-sans: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+  --font-serif: Georgia, "Times New Roman", "Microsoft YaHei UI", serif;
+  --font-mono: "Cascadia Mono", Consolas, "Microsoft YaHei UI", monospace;
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --bg: #262624;
+  --bg-sunken: #1f1e1d;
+  --surface: #30302e;
+  --hover: rgba(250, 249, 245, 0.05);
+  --active: rgba(250, 249, 245, 0.09);
+  --border: rgba(222, 220, 209, 0.12);
+  --border-strong: rgba(222, 220, 209, 0.24);
+  --text: #f5f4ef;
+  --text-2: #c2c0b6;
+  --text-3: #8f8d86;
+  --accent: #d97757;
+  --accent-hover: #e08a6c;
+  --accent-soft: rgba(217, 119, 87, 0.14);
+  --danger: #e2735f;
+  --danger-soft: rgba(226, 115, 95, 0.12);
+  --success: #8fb98f;
+  --success-soft: rgba(143, 185, 143, 0.12);
+  --warning: #d9a85b;
+  --warning-soft: rgba(217, 168, 91, 0.12);
+  --guide: #ff5ca8;
+
+  --syntax-key: #a3bcd8;
+  --syntax-string: #a5c99a;
+  --syntax-number: #e9a185;
+  --syntax-literal: #b9a6e0;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.5);
+  color-scheme: dark;
+}
